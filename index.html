@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gaussian Splat Viewer - Urban Decoders</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a1a1a; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; }
+        
+        #viewer-container {
+            flex: 1; position: relative; cursor: crosshair;
+            background: linear-gradient(to right, #1e4a73, #5bc1d3); 
+            overflow: hidden;
+        }
+        #viewer-container:active { cursor: grabbing; }
+
+        #gallery {
+            height: 120px; background-color: #222; display: flex; align-items: center;
+            overflow-x: auto; white-space: nowrap; padding: 10px;
+            box-shadow: 0 -4px 10px rgba(0,0,0,0.5); z-index: 10;
+        }
+        #gallery::-webkit-scrollbar { height: 8px; }
+        #gallery::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+
+        .thumb-card {
+            height: 100px; min-width: 140px; width: 140px; margin-right: 15px;
+            border-radius: 8px; cursor: pointer; opacity: 0.6; transition: all 0.2s ease;
+            border: 2px solid transparent; background-color: #000;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            color: white; position: relative; overflow: hidden;
+        }
+        .thumb-card:hover { opacity: 1; transform: scale(1.05); }
+        .thumb-card.active { opacity: 1; border-color: #00d2ff; box-shadow: 0 0 10px #00d2ff; }
+        .thumb-icon { font-size: 30px; margin-bottom: 5px; }
+        .thumb-name { font-size: 10px; text-align: center; white-space: normal; padding: 0 5px; word-break: break-all; }
+
+        .upload-btn {
+            height: 100px; min-width: 100px; margin-right: 15px; border-radius: 8px;
+            border: 2px dashed #666; background-color: #2a2a2a; color: #ccc;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            cursor: pointer; transition: all 0.2s;
+        }
+        .upload-btn:hover { background-color: #333; border-color: #00d2ff; color: #fff; }
+        .upload-icon { font-size: 24px; margin-bottom: 5px; }
+        .upload-text { font-size: 12px; font-weight: bold; text-align: center; }
+        #fileInput { display: none; }
+
+        #empty-state-msg {
+            position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%);
+            color: white; text-align: center; pointer-events: none; user-select: none; z-index: 2;
+        }
+        .main-title {
+            font-size: 3.5rem; font-weight: bold; margin-bottom: 5px; /* Reduced margin */
+            text-shadow: 0 2px 10px rgba(0,0,0,0.3); display: block; text-decoration: none;
+            color: white; pointer-events: auto; cursor: pointer; transition: transform 0.2s ease, opacity 0.2s;
+        }
+        .main-title:hover { transform: scale(1.05); opacity: 0.9; }
+        
+        .sub-title { font-size: 1.5rem; font-weight: normal; text-shadow: 0 2px 10px rgba(0,0,0,0.3); }
+        
+        /* New explicit style for the small instruction text */
+        .instruction-text {
+            font-size: 1rem; color: #aaa; margin-top: 10px; font-weight: 300;
+        }
+
+        #controls-hint {
+            position: absolute; bottom: 20px; left: 20px; color: rgba(255,255,255,0.7);
+            font-size: 12px; pointer-events: none; z-index: 5;
+            background: rgba(0,0,0,0.5); padding: 8px; border-radius: 4px;
+        }
+
+        #footer {
+            background-color: #111; color: #666; text-align: center;
+            padding: 8px 0; font-size: 12px; letter-spacing: 1px; border-top: 1px solid #222;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="viewer-container">
+        <div id="empty-state-msg">
+            <a href="https://www.youtube.com/@Urban_Decoders" target="_blank" class="main-title">URBAN DECODERS</a>
+            <div class="sub-title">AI Gaussian Splat Viewer</div>
+            <div class="instruction-text">Upload .ply or .splat files</div>
+        </div>
+        <div id="controls-hint">WASD keys to move | Q/E (Up/Down) | Shift (Fast)</div>
+    </div>
+
+    <div id="gallery">
+        <label for="fileInput" class="upload-btn">
+            <span class="upload-icon">☁️</span>
+            <span class="upload-text">Upload Splat<br>(.ply / .splat)</span>
+        </label>
+        <input type="file" id="fileInput" accept=".ply,.splat" multiple>
+    </div>
+
+    <div id="footer">&copy; Urban Decoders 2026</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as GaussianSplats3D from 'gaussian-splats-3d';
+        import * as THREE from 'three';
+
+        const container = document.getElementById('viewer-container');
+        const emptyStateMsg = document.getElementById('empty-state-msg');
+        const gallery = document.getElementById('gallery');
+        const fileInput = document.getElementById('fileInput');
+        
+        let viewer = null;
+        let keys = { w: false, a: false, s: false, d: false, q: false, e: false, Shift: false };
+
+        window.addEventListener('keydown', (e) => {
+            const key = e.key.toLowerCase();
+            if (keys.hasOwnProperty(key)) keys[key] = true;
+            if (e.key === 'Shift') keys.Shift = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            const key = e.key.toLowerCase();
+            if (keys.hasOwnProperty(key)) keys[key] = false;
+            if (e.key === 'Shift') keys.Shift = false;
+        });
+
+        function updateMovement() {
+            requestAnimationFrame(updateMovement);
+            
+            if (!viewer || !viewer.camera || !viewer.controls) return;
+
+            const baseSpeed = 0.1; 
+            const sprintMult = 4.0;
+            const speed = keys.Shift ? baseSpeed * sprintMult : baseSpeed;
+
+            const camera = viewer.camera;
+            const controls = viewer.controls; 
+
+            const direction = new THREE.Vector3();
+            camera.getWorldDirection(direction);
+            direction.y = 0; 
+            direction.normalize();
+
+            const right = new THREE.Vector3();
+            right.crossVectors(direction, camera.up).normalize();
+
+            const up = new THREE.Vector3(0, 1, 0);
+
+            let didMove = false;
+
+            if (keys.w) {
+                camera.position.addScaledVector(direction, speed);
+                controls.target.addScaledVector(direction, speed);
+                didMove = true;
+            }
+            if (keys.s) {
+                camera.position.addScaledVector(direction, -speed);
+                controls.target.addScaledVector(direction, -speed);
+                didMove = true;
+            }
+            if (keys.a) {
+                camera.position.addScaledVector(right, -speed);
+                controls.target.addScaledVector(right, -speed);
+                didMove = true;
+            }
+            if (keys.d) {
+                camera.position.addScaledVector(right, speed);
+                controls.target.addScaledVector(right, speed);
+                didMove = true;
+            }
+            if (keys.e) { 
+                camera.position.addScaledVector(up, speed);
+                controls.target.addScaledVector(up, speed);
+                didMove = true;
+            }
+            if (keys.q) { 
+                camera.position.addScaledVector(up, -speed);
+                controls.target.addScaledVector(up, -speed);
+                didMove = true;
+            }
+
+            if (didMove) {
+                controls.update();
+            }
+        }
+        updateMovement();
+
+        fileInput.addEventListener('change', function(e) {
+            const files = e.target.files;
+            if (!files || files.length === 0) return;
+
+            emptyStateMsg.style.display = 'none';
+
+            Array.from(files).forEach((file, index) => {
+                const objectURL = URL.createObjectURL(file);
+                
+                let format = GaussianSplats3D.SceneFormat.Splat;
+                if (file.name.toLowerCase().endsWith('.ply')) {
+                    format = GaussianSplats3D.SceneFormat.Ply;
+                }
+
+                const thumb = addToGalleryUI(file.name, objectURL, format);
+
+                if (index === 0) {
+                    loadSplat(objectURL, format);
+                    thumb.classList.add('active');
+                }
+            });
+            fileInput.value = '';
+        });
+
+        function loadSplat(url, format) {
+            if (viewer) {
+                viewer.dispose();
+                viewer = null;
+                container.innerHTML = '';
+                container.appendChild(emptyStateMsg);
+                
+                // Re-create the hint with the Updated Text
+                const hint = document.createElement('div');
+                hint.id = 'controls-hint';
+                hint.innerText = 'WASD keys to move | Q/E (Up/Down) | Shift (Fast)';
+                container.appendChild(hint);
+            }
+
+            const options = {
+                'rootElement': container,
+                'alpha': true,
+                'cameraUp': [0, 1, 0], 
+                'initialCameraPosition': [0, 1, 5],
+                'sphericalHarmonicsDegree': 0,
+                'sharedMemoryForWorkers': false
+            };
+
+            viewer = new GaussianSplats3D.Viewer(options);
+
+            const rotateX180 = [1, 0, 0, 0]; 
+
+            viewer.addSplatScene(url, {
+                'format': format, 
+                'splatAlphaRemovalThreshold': 5,
+                'showLoadingUI': true,
+                'position': [0, 0, 0],
+                'rotation': rotateX180, 
+                'scale': [1, 1, 1]
+            })
+            .then(() => {
+                console.log("Splat loaded successfully");
+                viewer.start();
+            })
+            .catch(err => {
+                console.error("Error loading splat:", err);
+                if(err.message && err.message.includes("File format")) {
+                   alert("Error: This file type is not recognized.");
+                } else {
+                   alert("Could not load splat file.");
+                }
+            });
+        }
+
+        function addToGalleryUI(filename, url, format) {
+            const card = document.createElement('div');
+            card.classList.add('thumb-card');
+            const icon = document.createElement('div');
+            icon.classList.add('thumb-icon');
+            icon.innerText = '🧊'; 
+            const name = document.createElement('div');
+            name.classList.add('thumb-name');
+            name.innerText = filename.length > 15 ? filename.substring(0, 12) + '...' : filename;
+            card.appendChild(icon);
+            card.appendChild(name);
+
+            card.addEventListener('click', () => {
+                document.querySelectorAll('.thumb-card').forEach(t => t.classList.remove('active'));
+                card.classList.add('active');
+                loadSplat(url, format);
+            });
+
+            gallery.appendChild(card);
+            return card;
+        }
+    </script>
+</body>
+</html>
